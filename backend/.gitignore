@@ -1,0 +1,51 @@
+# =============================================
+# EgerBot .gitignore
+# =============================================
+
+# Environment variables — NEVER commit this
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Virtual environment
+venv/
+env/
+.venv/
+.env/
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Logs
+*.log
+
+# System prompt (contains KB structure)
+ .egerbot_system_prompt.txt
+
+# Local scripts (personal)
+launch.bat
+serve.py
+
+# Admin testing folder (if not needed)
+admin/
