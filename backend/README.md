@@ -118,33 +118,10 @@ VALUES (
 );
 ```
 
-To generate the bcrypt hash from terminal:
-
-```bash
-python -c "import bcrypt; print(bcrypt.hashpw(b'YourPassword123', bcrypt.gensalt()).decode())"
-```
-
 Copy the output and paste it into the SQL above.
 
 ---
 
-## 3. Running the Server
-
-### Development
-
-```bash
-python app.py
-```
-
-Server starts at `http://localhost:5000`
-
-### Production (gunicorn)
-
-```bash
-gunicorn app:app --bind 0.0.0.0:5000 --workers 2 --timeout 120
-```
-
----
 
 ## 4. Testing the API
 
