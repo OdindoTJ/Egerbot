@@ -1,12 +1,18 @@
 """
 services/llm.py
 ═══════════════════════════════════════════════════════════════════════════════
-LLM Provider Cascade:  Google Gemini  →  Ollama (local)  →  Anthropic Claude
+LLM Provider Cascade:  Google Gemini  →  Anthropic Claude
+
+NOTE ON OLLAMA:
+  Ollama runs locally on your machine. It is NOT available on Render or any
+  cloud deployment — localhost:11434 does not exist on the server.
+  Ollama is only tried when OLLAMA_ENABLED=true is set in your .env file
+  (use this locally; never set it on Render).
 
 Priority order:
-  1. Google Gemini  (GOOGLE_API_KEY in .env)
-  2. Ollama         (local, must be running on localhost:11434)
-  3. Anthropic      (ANTHROPIC_API_KEY in .env)
+  1. Google Gemini  (GOOGLE_API_KEY in .env / Render env vars)
+  2. Anthropic      (ANTHROPIC_API_KEY in .env / Render env vars)
+  [Ollama only if OLLAMA_ENABLED=true — for local dev only]
 
 If a provider fails for any reason (missing key, network error, quota) the
 next provider in the list is tried automatically. A human-readable bilingual
@@ -25,25 +31,26 @@ from services.prompt import build_system_prompt, build_messages
 logger = logging.getLogger(__name__)
 
 # ── Model names ───────────────────────────────────────────────────────────────
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL",  "gemini-1.5-flash")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL",  "llama3.2")
-OLLAMA_URL = os.environ.get("OLLAMA_URL",    "http://localhost:11434")
-CLAUDE_MODEL = os.environ.get("LLM_MODEL",     "claude-sonnet-4-6")
+GEMINI_MODEL   = os.environ.get("GEMINI_MODEL",    "models/gemini-2.5-flash")
+OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL",    "llama3.2")
+OLLAMA_URL     = os.environ.get("OLLAMA_URL",      "http://localhost:11434")
+OLLAMA_ENABLED = os.environ.get("OLLAMA_ENABLED",  "false").lower() == "true"
+CLAUDE_MODEL   = os.environ.get("LLM_MODEL",       "claude-sonnet-4-6")
 
 # ── Lazy-initialised clients ─────────────────────────────────────────────────
-_gemini_model = None
+_gemini_model  = None
 _claude_client = None
 
 
 def _get_gemini():
-    """Return a Gemini GenerativeModel with relaxed safety settings."""
+    """Return a Gemini GenerativeModel, or None if not configured."""
     global _gemini_model
     if _gemini_model is not None:
         return _gemini_model
 
     api_key = os.environ.get("GOOGLE_API_KEY", "").strip()
     if not api_key:
-        logger.error("GOOGLE_API_KEY not found in environment variables")
+        logger.warning("Gemini skipped — GOOGLE_API_KEY not set")
         return None
 
     try:
@@ -52,30 +59,18 @@ def _get_gemini():
 
         genai.configure(api_key=api_key)
 
-        models_to_try = [
-            "models/gemini-2.5-flash",
-            "models/gemini-2.0-flash",
-            "models/gemini-flash-latest",
-            "models/gemini-2.5-flash-lite",
-            "models/gemini-2.0-flash-lite",
-        ]
-
-        # Relaxed safety settings to prevent empty responses on the free tier
         safety_settings = {
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HARASSMENT:        HarmBlockThreshold.BLOCK_NONE,
+            HarmCategory.HARM_CATEGORY_HATE_SPEECH:       HarmBlockThreshold.BLOCK_NONE,
             HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
             HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
         }
 
-        # Initialize the model with these settings
         _gemini_model = genai.GenerativeModel(
             model_name=GEMINI_MODEL,
-            safety_settings=safety_settings
+            safety_settings=safety_settings,
         )
-
-        logger.info(
-            f"Gemini client ready — model: {GEMINI_MODEL} (Safety: relaxed)")
+        logger.info(f"Gemini client ready — model: {GEMINI_MODEL}")
         return _gemini_model
 
     except Exception as e:
@@ -84,13 +79,16 @@ def _get_gemini():
 
 
 def _get_claude():
-    """Return an Anthropic client, or None if not available."""
+    """Return an Anthropic client, or None if not configured."""
     global _claude_client
     if _claude_client is not None:
         return _claude_client
+
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
+        logger.warning("Claude skipped — ANTHROPIC_API_KEY not set")
         return None
+
     try:
         import anthropic
         _claude_client = anthropic.Anthropic(api_key=api_key)
@@ -102,9 +100,11 @@ def _get_claude():
 
 
 def _ollama_available() -> bool:
-    """Return True if the Ollama server is reachable."""
+    """Return True only if Ollama is explicitly enabled AND reachable."""
+    if not OLLAMA_ENABLED:
+        return False          # Skip entirely in production
     try:
-        r = requests.get("http://localhost:11434/api/tags", timeout=3)
+        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
         return r.status_code == 200
     except Exception:
         return False
@@ -147,37 +147,17 @@ def _fallback(language: str, error_type: str,
               email: str = "admissions@egerton.ac.ke",
               phone: str = "+254 51 221 3018") -> str:
     msgs = {
-        "auth_error": {
-            "en": f"I'm unable to connect to my AI service right now. Please contact us directly: {email} | {phone} | www.egerton.ac.ke",
-            "sw": f"Siwezi kuunganisha na huduma yangu ya AI sasa hivi. Tafadhali wasiliana nasi moja kwa moja: {email} | {phone} | www.egerton.ac.ke",
-        },
-        "quota_exceeded": {
-            "en": f"EgerBot has reached its usage limit for now. For immediate help: {email} | {phone} | www.egerton.ac.ke",
-            "sw": f"EgerBot imefika kikomo chake cha matumizi. Kwa msaada wa haraka: {email} | {phone} | www.egerton.ac.ke",
-        },
-        "rate_limit": {
-            "en": "I'm receiving too many requests right now. Please wait a few seconds and try again.",
-            "sw": "Ninapokea maombi mengi sana sasa hivi. Tafadhali subiri sekunde chache na ujaribu tena.",
-        },
         "all_providers_failed": {
-            "en": f"EgerBot is temporarily unavailable. Please contact the Admissions Office directly: {email} | {phone} | www.egerton.ac.ke",
-            "sw": f"EgerBot haipatikani kwa muda. Tafadhali wasiliana na Ofisi ya Udahili moja kwa moja: {email} | {phone} | www.egerton.ac.ke",
+            "en": f"EgerBot is temporarily unavailable. Please contact the Admissions Office: {email} | {phone} | www.egerton.ac.ke",
+            "sw": f"EgerBot haipatikani kwa muda. Tafadhali wasiliana na Ofisi ya Udahili: {email} | {phone} | www.egerton.ac.ke",
         },
-        "connection_error": {
-            "en": f"I'm having trouble connecting right now. Please try again, or contact: {email} | {phone}",
-            "sw": f"Nina tatizo la kuunganisha sasa hivi. Tafadhali jaribu tena, au wasiliana: {email} | {phone}",
-        },
-        "timeout": {
-            "en": f"My response is taking too long. Please try again or contact: {email} | {phone}",
-            "sw": f"Jibu langu linachukua muda mrefu. Tafadhali jaribu tena au wasiliana: {email} | {phone}",
+        "config_error": {
+            "en": f"EgerBot is not configured correctly. Please contact: {email} | {phone}",
+            "sw": f"EgerBot haijasanidiwa vizuri. Tafadhali wasiliana: {email} | {phone}",
         },
         "empty_response": {
             "en": "I received an empty response. Please rephrase your question and try again.",
             "sw": "Nilipokea jibu tupu. Tafadhali unda upya swali lako na ujaribu tena.",
-        },
-        "config_error": {
-            "en": f"EgerBot is not configured correctly at the moment. Please contact: {email} | {phone}",
-            "sw": f"EgerBot haijasanidiwa vizuri kwa sasa hivi. Tafadhali wasiliana: {email} | {phone}",
         },
         "unexpected": {
             "en": f"Something went wrong. Please try again, or contact: {email} | {phone}",
@@ -196,63 +176,60 @@ def _call_gemini(system_prompt: str, messages: list) -> str:
     """Call Google Gemini. Returns response text or raises Exception."""
     model = _get_gemini()
     if model is None:
-        raise RuntimeError("Gemini not configured — GOOGLE_API_KEY missing")
+        raise RuntimeError("Gemini not configured — GOOGLE_API_KEY missing or empty")
 
-    # Build a single prompt string: system + conversation
-    # Using a clear structure helps the model distinguish instructions from history
-    parts = [f"SYSTEM_INSTRUCTIONS:\n{system_prompt}",
-             "\n\n--- CONVERSATION HISTORY ---\n"]
+    # Combine system prompt + conversation history into a single prompt
+    parts = [f"SYSTEM_INSTRUCTIONS:\n{system_prompt}", "\n\n--- CONVERSATION ---\n"]
     for msg in messages:
-        # Use 'user' and 'model' as these are the native Gemini roles
         role = "User" if msg["role"] == "user" else "EgerBot"
         parts.append(f"{role}: {msg['content']}")
 
     full_prompt = "\n".join(parts)
 
     try:
-        # We call generate_content. Note: safety_settings are already in _get_gemini
         response = model.generate_content(
             full_prompt,
-            generation_config={"max_output_tokens": LLM_MAX_TOKENS},
+            generation_config={
+                "max_output_tokens": LLM_MAX_TOKENS,
+                "temperature":       0.7,
+            },
         )
 
-        # CRITICAL: Check if the response was blocked before accessing .text
+        # Handle safety blocks or empty candidates
         if not response.candidates:
-            # If blocked by safety filters, candidates list will be empty
-            logger.warning("Gemini blocked the response (Safety/Other).")
-            raise RuntimeError(
-                "Gemini blocked the response due to safety filters.")
+            raise RuntimeError("Gemini returned no candidates (safety block?)")
 
-        # Access text safely
-        text = response.text.strip()
+        candidate = response.candidates[0]
+        if not candidate.content or not candidate.content.parts:
+            raise RuntimeError("Gemini candidate has no content parts")
 
+        text = "".join(p.text for p in candidate.content.parts if hasattr(p, "text")).strip()
         if not text:
             raise RuntimeError("Gemini returned empty text")
 
+        logger.info(f"Gemini response: {len(text)} chars")
         return text
 
-    except ValueError as e:
-        # This usually happens if response.text is accessed on a blocked response
-        logger.error(f"Gemini Safety Block or Parse Error: {e}")
-        raise RuntimeError(f"Gemini could not generate text: {e}")
-    except Exception as e:
-        logger.error(f"Gemini API call failed: {e}")
+    except RuntimeError:
         raise
+    except Exception as e:
+        raise RuntimeError(f"Gemini API error: {e}") from e
 
 
 def _call_ollama(system_prompt: str, messages: list) -> str:
-    """Call local Ollama. Returns response text or raises Exception."""
+    """Call Ollama (LOCAL ONLY). Raises if not available."""
     if not _ollama_available():
-        raise RuntimeError(f"Ollama not reachable at http://localhost:11434")
+        raise RuntimeError(
+            "Ollama not available — either not running locally or "
+            "OLLAMA_ENABLED is false (correct for production)"
+        )
 
-    # Build messages array for Ollama's /api/chat endpoint
     ollama_messages = [{"role": "system", "content": system_prompt}]
     for msg in messages:
-        ollama_messages.append(
-            {"role": msg["role"], "content": msg["content"]})
+        ollama_messages.append({"role": msg["role"], "content": msg["content"]})
 
     resp = requests.post(
-        "http://localhost:11434/api/chat",  # Hardcode correct URL
+        f"{OLLAMA_URL}/api/chat",
         json={
             "model":    OLLAMA_MODEL,
             "messages": ollama_messages,
@@ -262,8 +239,7 @@ def _call_ollama(system_prompt: str, messages: list) -> str:
         timeout=120,
     )
     resp.raise_for_status()
-    data = resp.json()
-    text = data.get("message", {}).get("content", "").strip()
+    text = resp.json().get("message", {}).get("content", "").strip()
     if not text:
         raise RuntimeError("Ollama returned empty content")
     return text
@@ -271,10 +247,9 @@ def _call_ollama(system_prompt: str, messages: list) -> str:
 
 def _call_claude(system_prompt: str, messages: list) -> str:
     """Call Anthropic Claude. Returns response text or raises Exception."""
-    import anthropic
     client = _get_claude()
     if client is None:
-        raise RuntimeError("Claude not configured — ANTHROPIC_API_KEY missing")
+        raise RuntimeError("Claude not configured — ANTHROPIC_API_KEY missing or empty")
 
     resp = client.messages.create(
         model=CLAUDE_MODEL,
@@ -289,13 +264,11 @@ def _call_claude(system_prompt: str, messages: list) -> str:
     if not text:
         raise RuntimeError("Claude returned blank text")
 
-    # Log token usage
     usage = getattr(resp, "usage", None)
     if usage:
         logger.info(
             f"Claude tokens — input:{usage.input_tokens} "
-            f"output:{usage.output_tokens} "
-            f"total:{usage.input_tokens + usage.output_tokens}"
+            f"output:{usage.output_tokens}"
         )
     return text
 
@@ -317,15 +290,12 @@ def get_session_history(db: Client, session_id: str) -> list:
         history = []
         for row in rows.data:
             if row.get("user_message"):
-                history.append(
-                    {"role": "user",      "content": row["user_message"]})
+                history.append({"role": "user",      "content": row["user_message"]})
             if row.get("bot_response"):
-                history.append(
-                    {"role": "assistant", "content": row["bot_response"]})
+                history.append({"role": "assistant", "content": row["bot_response"]})
         return history
     except Exception as e:
-        logger.warning(
-            f"Could not fetch session history for {session_id}: {e}")
+        logger.warning(f"Could not fetch session history for {session_id}: {e}")
         return []
 
 
@@ -352,15 +322,15 @@ def _get_contacts(db: Client) -> tuple:
 def call_llm(db: Client, session_id: str, user_message: str,
              language: str = "en") -> dict:
     """
-    Call the LLM cascade: Gemini → Ollama → Claude.
+    Call the LLM cascade: Gemini → Claude → [Ollama if local].
 
     Returns:
         {
-            "response":   str   — bot reply (never None)
-            "escalated":  bool  — True if bot could not answer
-            "intent":     None  — future use
-            "error":      str|None
-            "provider":   str   — which provider answered
+            "response":  str   — bot reply (never None)
+            "escalated": bool  — True if bot could not answer
+            "intent":    None  — future use
+            "error":     str|None
+            "provider":  str   — which provider answered
         }
     """
     email, phone = _get_contacts(db)
@@ -369,8 +339,7 @@ def call_llm(db: Client, session_id: str, user_message: str,
     try:
         system_prompt = build_system_prompt(db)
     except FileNotFoundError:
-        logger.error(
-            "System prompt file not found — check SYSTEM_PROMPT_PATH in .env")
+        logger.error("System prompt file not found — check SYSTEM_PROMPT_PATH in .env")
         return _err(_fallback(language, "config_error", email, phone), "prompt_missing")
     except Exception as e:
         logger.error(f"Failed to build system prompt: {e}")
@@ -381,25 +350,29 @@ def call_llm(db: Client, session_id: str, user_message: str,
         return _err(_fallback(language, "config_error", email, phone), "empty_prompt")
 
     # ── Build messages ───────────────────────────────────────────────────────
-    history = get_session_history(db, session_id)
+    history  = get_session_history(db, session_id)
     messages = build_messages(history, user_message)
 
-    # ── Try each provider in order ───────────────────────────────────────────
+    # ── Provider cascade ─────────────────────────────────────────────────────
+    # Gemini first (free, fast). Claude as fallback (paid, reliable).
+    # Ollama only when running locally with OLLAMA_ENABLED=true.
     providers = [
         ("Gemini", lambda: _call_gemini(system_prompt, messages)),
-        ("Ollama", lambda: _call_ollama(system_prompt, messages)),
         ("Claude", lambda: _call_claude(system_prompt, messages)),
     ]
+
+    # Add Ollama to the list only if enabled (local dev)
+    if OLLAMA_ENABLED:
+        providers.append(
+            ("Ollama", lambda: _call_ollama(system_prompt, messages))
+        )
 
     last_error = None
     for provider_name, caller in providers:
         try:
             logger.info(f"Trying LLM provider: {provider_name}")
             text = caller()
-
-            # Handle max-token truncation
             text = _check_truncation(text, language, email)
-
             logger.info(f"Response from {provider_name} ({len(text)} chars)")
             return {
                 "response":  text,
@@ -410,13 +383,11 @@ def call_llm(db: Client, session_id: str, user_message: str,
             }
 
         except RuntimeError as e:
-            # Configuration / availability issue — skip silently, try next
             logger.info(f"{provider_name} skipped: {e}")
             last_error = str(e)
             continue
 
         except Exception as e:
-            # Actual API error — log it, try next
             logger.warning(f"{provider_name} failed: {type(e).__name__}: {e}")
             last_error = f"{type(e).__name__}: {e}"
             continue
@@ -430,17 +401,14 @@ def call_llm(db: Client, session_id: str, user_message: str,
 
 
 def _check_truncation(text: str, language: str, email: str) -> str:
-    """Add a note if the response looks truncated."""
-    # Heuristic: ends mid-sentence without punctuation
-    if text and not text[-1] in ".!?،۔।॥":
-        # Only add note if text is already substantial (>200 chars)
-        if len(text) > 200:
-            note = (
-                f"\n\n[Response may be incomplete. For full details, contact {email}]"
-                if language != "sw" else
-                f"\n\n[Jibu linaweza kuwa lisilo kamili. Kwa maelezo kamili, wasiliana {email}]"
-            )
-            return text + note
+    """Add a note if the response looks truncated mid-sentence."""
+    if text and text[-1] not in ".!?،۔।॥" and len(text) > 200:
+        note = (
+            f"\n\n[Response may be incomplete. For full details contact {email}]"
+            if language != "sw" else
+            f"\n\n[Jibu linaweza kuwa lisilo kamili. Kwa maelezo kamili wasiliana {email}]"
+        )
+        return text + note
     return text
 
 
