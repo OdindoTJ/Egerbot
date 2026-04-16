@@ -92,6 +92,13 @@ def create_app() -> Flask:
     def handle_options(path):
         return jsonify({}), 200
 
+    @app.route("/", methods=["GET"])
+    def index():
+        return jsonify({
+            "status": "online",
+            "message": "EgerBot Backend is running",
+            "version": "1.0.0"
+        }), 200
     # ── Register blueprints ───────────────────────────────────────────────────
     app.register_blueprint(health_bp)
     app.register_blueprint(chat_bp)
