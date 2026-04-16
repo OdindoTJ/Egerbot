@@ -104,7 +104,8 @@ def _ollama_available() -> bool:
     if not OLLAMA_ENABLED:
         return False          # Skip entirely in production
     try:
-        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=3)
+        # Short ping to check if Ollama is running at all
+        r = requests.get(f"{OLLAMA_URL}/api/tags", timeout=5)
         return r.status_code == 200
     except Exception:
         return False
@@ -236,7 +237,7 @@ def _call_ollama(system_prompt: str, messages: list) -> str:
             "stream":   False,
             "options":  {"num_predict": LLM_MAX_TOKENS},
         },
-        timeout=120,
+        timeout=180,   # llama3.2 first load can take 2-3 min on slow hardware
     )
     resp.raise_for_status()
     text = resp.json().get("message", {}).get("content", "").strip()
@@ -356,16 +357,22 @@ def call_llm(db: Client, session_id: str, user_message: str,
     # ── Provider cascade ─────────────────────────────────────────────────────
     # Gemini first (free, fast). Claude as fallback (paid, reliable).
     # Ollama only when running locally with OLLAMA_ENABLED=true.
-    providers = [
-        ("Gemini", lambda: _call_gemini(system_prompt, messages)),
-        ("Claude", lambda: _call_claude(system_prompt, messages)),
-    ]
-
-    # Add Ollama to the list only if enabled (local dev)
+    # Build provider list based on environment
+    # Local dev (OLLAMA_ENABLED=true): Ollama first (free, private) → Gemini → Claude
+    # Production (OLLAMA_ENABLED=false): Gemini first (free API) → Claude (paid fallback)
     if OLLAMA_ENABLED:
-        providers.append(
-            ("Ollama", lambda: _call_ollama(system_prompt, messages))
-        )
+        providers = [
+            ("Ollama", lambda: _call_ollama(system_prompt, messages)),
+            ("Gemini", lambda: _call_gemini(system_prompt, messages)),
+            ("Claude", lambda: _call_claude(system_prompt, messages)),
+        ]
+        logger.info("LLM cascade: Ollama → Gemini → Claude (local dev mode)")
+    else:
+        providers = [
+            ("Gemini", lambda: _call_gemini(system_prompt, messages)),
+            ("Claude", lambda: _call_claude(system_prompt, messages)),
+        ]
+        logger.info("LLM cascade: Gemini → Claude (production mode)")
 
     last_error = None
     for provider_name, caller in providers:
