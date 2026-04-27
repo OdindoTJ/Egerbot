@@ -1008,7 +1008,7 @@ els.annClose.addEventListener("click",()=>{
 });
 
 // ── New chat ──────────────────────────────────────────────────────────────
-async function clearChat(){
+ async function clearChat(){
   if(state.sessionId) await apiEnd(state.sessionId);
   state.sessionId=null; state.lastLogId=null; state.msgCount=0; state.sending=false;
   state.allMessages=[];
@@ -1106,23 +1106,45 @@ async function apiRequest(method,path,body=null){
 }
 async function apiStart(type="prospective"){ return apiRequest("POST","/api/session/start",{user_type:type}); }
 async function apiEnd(sid){ return apiRequest("POST","/api/session/end",{session_id:sid}); }
-async function apiGreeting(){ return apiRequest("GET","/api/greeting"); }
+async function apiGreeting(){ return apiRequest("GET","/api/greeting?lang="+state.lang); }
 async function apiChat(sid,msg,type){ return apiRequest("POST","/api/chat",{session_id:sid,message:msg,user_type:type}); }
 async function apiFeedback(logId,rating){ return apiRequest("POST","/api/feedback",{chat_log_id:logId,rating}); }
 
 // ── Session init ──────────────────────────────────────────────────────────
+
+// ── Time-based greeting (East Africa Time UTC+3) ─────────────────────────────
+function _timeGreeting(lang){
+  const eatOffset = 3 * 60; // EAT = UTC+3 in minutes
+  const now = new Date(Date.now() + (eatOffset - (new Date().getTimezoneOffset())) * 60000);
+  const hour = now.getUTCHours();
+  let period_en, period_sw;
+  if(hour >= 5 && hour < 12){
+    period_en = "Good morning"; period_sw = "Habari za asubuhi";
+  } else if(hour >= 12 && hour < 17){
+    period_en = "Good afternoon"; period_sw = "Habari za mchana";
+  } else if(hour >= 17 && hour < 21){
+    period_en = "Good evening"; period_sw = "Habari za jioni";
+  } else {
+    period_en = "Hello"; period_sw = "Habari";
+  }
+  if(lang === "sw"){
+    return `${period_sw}! Mimi ni EgerBot — Msaidizi wa Chuo Kikuu cha Egerton. Ninawezaje kukusaidia?`;
+  }
+  return `${period_en}! I'm EgerBot — Egerton University's Chatbot Assistant. How may I help you today?`;
+}
+
 async function initSession(){
   showTyping();
   const{data,error} = await apiStart(state.userType);
   hideTyping();
   if(!data?.session_id){ 
     console.error("Session start failed:",error);
-    appendBot("Connecting to EgerBot — please wait a moment and refresh if this takes too long.", null, false, true);
+    appendBot("Connecting… EgerBot is waking up (this takes ~30 seconds on first load). Please wait.", null, false, true);
     return;
   }
   state.sessionId = data.session_id;
   const{data:gd} = await apiGreeting();
-  const greeting = gd ? (state.lang==="sw" ? gd.greeting_sw : gd.greeting_en) : "Hello! Welcome to Egerton University. I am EgerBot, your guide to joining Egerton. How can I help you today?";
+  const greeting = gd ? (state.lang==="sw" ? gd.greeting_sw : gd.greeting_en) : _timeGreeting(state.lang);
   setTimeout(()=>appendBot(greeting,null,false,false),500);
 }
 
@@ -1153,8 +1175,8 @@ async function sendMsg(overrideText){
 
   if(error||!data){
     const errMsg = state.lang==="sw"
-      ? "Seva inaweza kuwa inawaka. Tafadhali subiri sekunde 30 na ujaribu tena, au wasiliana na admissions@egerton.ac.ke"
-      : "I'm having trouble connecting — the server may be waking up. Please wait 30 seconds and try again, or contact admissions@egerton.ac.ke";
+      ? "EgerBot inawaka — seva inahitaji sekunde ~30 wakati wa kwanza. Tafadhali subiri kidogo na utume tena ujumbe wako."
+      : "EgerBot is waking up — the server needs ~30 seconds on first use. Please wait a moment and send your message again.";
     appendBot(errMsg,null,false,true);
   } else {
     appendBot(data.response, data.chat_log_id, data.escalated, false);

@@ -4,13 +4,28 @@ Creates the Flask app, registers all blueprints, starts the server.
 """
 
 import logging
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 
 from config.settings import FLASK_ENV, PORT, ALLOWED_ORIGINS
 from routes.health import health_bp
 from routes.chat import chat_bp
 from routes.admin import admin_bp
+
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+# pip install flask-limiter
+# Prevents API abuse and runaway billing on Gemini/Claude
+try:
+    from flask_limiter import Limiter
+    from flask_limiter.util import get_remote_address
+    LIMITER_AVAILABLE = True
+except ImportError:
+    LIMITER_AVAILABLE = False
+    logging.getLogger(__name__).warning(
+        "flask-limiter not installed — rate limiting disabled. "
+        "Run: pip install flask-limiter"
+    )
+
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -23,6 +38,59 @@ logger = logging.getLogger(__name__)
 
 def create_app() -> Flask:
     app = Flask(__name__)
+
+    # ── Rate Limiting ─────────────────────────────────────────────────────────
+    # Global: 200 requests/day, 50/hour per IP.
+    # The /api/chat route gets a tighter per-minute limit (see chat.py).
+    if LIMITER_AVAILABLE:
+        limiter = Limiter(
+            app=app,
+            key_func=get_remote_address,
+            default_limits=["200 per day", "50 per hour"],
+            headers_enabled=True,           # sends X-RateLimit-* headers
+            storage_uri="memory://",        # in-memory; swap for Redis in prod
+        )
+        app.extensions["limiter"] = limiter
+        logger.info("Rate limiting enabled (200/day, 50/hour per IP)")
+    else:
+        app.extensions["limiter"] = None
+
+    # ── Input Sanitization ────────────────────────────────────────────────────
+    # Block prompt-injection attempts and oversized payloads on every request.
+    _BLOCKED_PATTERNS = [
+        "ignore previous instructions",
+        "ignore all instructions",
+        "disregard your instructions",
+        "reveal your system prompt",
+        "show me your prompt",
+        "what are your instructions",
+        "act as a different ai",
+        "pretend you are not",
+        "jailbreak",
+        "dan mode",
+        "developer mode",
+    ]
+
+    @app.before_request
+    def sanitize_input():
+        """Block oversized bodies and obvious prompt-injection strings."""
+        if request.method in ("POST", "PUT", "PATCH"):
+            # Block payloads over 10 KB
+            content_length = request.content_length
+            if content_length and content_length > 10_240:
+                return jsonify({"error": "Request body too large"}), 413
+
+            data = request.get_json(silent=True)
+            if data:
+                message = (data.get("message") or "").lower()
+                for pattern in _BLOCKED_PATTERNS:
+                    if pattern in message:
+                        logger.warning(
+                            f"Blocked prompt injection attempt: {message[:80]}"
+                        )
+                        return jsonify({
+                            "error": "Message contains disallowed content"
+                        }), 400
 
     # ── CORS ──────────────────────────────────────────────────────────────────
     # The key fix: flask-cors must handle preflight OPTIONS requests explicitly.

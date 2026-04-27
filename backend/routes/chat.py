@@ -6,7 +6,7 @@ No admin authentication required here.
 
 import uuid
 from datetime import datetime, timezone
-from flask import Blueprint, request, jsonify
+from flask import Blueprint, current_app, request, jsonify
 
 from config.supabase import get_db
 from services.knowledge import get_system_config
@@ -14,6 +14,38 @@ from services.llm import call_llm
 from utils.language import detect_language
 
 chat_bp = Blueprint("chat", __name__, url_prefix="/api")
+
+
+# ── Time-based greeting helper ────────────────────────────────────────────────
+
+def _time_greeting(language: str = "en") -> str:
+    """
+    Return a short time-aware greeting.
+    Uses UTC+3 (East Africa Time) since Egerton is in Kenya.
+    """
+    # EAT = UTC+3
+    from datetime import timedelta
+    eat_now = datetime.now(timezone.utc) + timedelta(hours=3)
+    hour = eat_now.hour
+
+    if 5 <= hour < 12:
+        period_en, period_sw = "Good morning", "Habari za asubuhi"
+    elif 12 <= hour < 17:
+        period_en, period_sw = "Good afternoon", "Habari za mchana"
+    elif 17 <= hour < 21:
+        period_en, period_sw = "Good evening", "Habari za jioni"
+    else:
+        period_en, period_sw = "Hello", "Habari"
+
+    if language == "sw":
+        return (
+            f"{period_sw}! Mimi ni EgerBot — Msaidizi wa Chuo Kikuu cha Egerton. "
+            "Ninawezaje kukusaidia leo?"
+        )
+    return (
+        f"{period_en}! I'm EgerBot — Egerton University's Chatbot Assistant. "
+        "How may I help you today?"
+    )
 
 
 # ── Helper: log unanswered question ──────────────────────────────────────────
@@ -54,11 +86,25 @@ def _log_unanswered(db, question: str, language: str, session_id: str):
 
 @chat_bp.route("/greeting", methods=["GET"])
 def greeting():
+    """
+    Returns the bot greeting.
+    Priority: system_config DB value → time-based generated greeting.
+    The frontend can pass ?lang=sw to get Kiswahili.
+    """
+    lang = request.args.get("lang", "en")
     db = get_db()
     cfg = get_system_config(db)
+
+    # Use DB-configured greeting if set by admin, otherwise use time-based
+    db_greeting_en = cfg.get("greeting_en", "").strip()
+    db_greeting_sw = cfg.get("greeting_sw", "").strip()
+
+    greeting_en = db_greeting_en if db_greeting_en else _time_greeting("en")
+    greeting_sw = db_greeting_sw if db_greeting_sw else _time_greeting("sw")
+
     return jsonify({
-        "greeting_en": cfg.get("greeting_en", "Hello! Welcome to Egerton University. How can I help you?"),
-        "greeting_sw": cfg.get("greeting_sw", "Habari! Karibu Chuo Kikuu cha Egerton. Ninawezaje kukusaidia?"),
+        "greeting_en": greeting_en,
+        "greeting_sw": greeting_sw,
     }), 200
 
 
@@ -90,6 +136,17 @@ def start_session():
 
 @chat_bp.route("/chat", methods=["POST"])
 def chat():
+    # Apply tighter rate limit to the LLM-calling route
+    # (15 messages/minute per IP — enough for real users, blocks scrapers)
+    limiter = current_app.extensions.get("limiter")
+    if limiter:
+        try:
+            limiter.limit("15 per minute")(lambda: None)()
+        except Exception:
+            return jsonify({
+                "error": "Too many messages. Please wait a moment before sending again."
+            }), 429
+
     body = request.get_json(silent=True)
     if not body:
         return jsonify({"error": "JSON body required"}), 400

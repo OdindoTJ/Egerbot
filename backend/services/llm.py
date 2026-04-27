@@ -28,17 +28,23 @@ from supabase import Client
 from config.settings import LLM_MAX_TOKENS
 from services.prompt import build_system_prompt, build_messages
 
+# Rule-based fallback — answers common questions without any LLM API
+try:
+    from services.rule_engine import answer as rule_answer
+except ImportError:
+    rule_answer = None
+
 logger = logging.getLogger(__name__)
 
 # ── Model names ───────────────────────────────────────────────────────────────
-GEMINI_MODEL   = os.environ.get("GEMINI_MODEL",    "models/gemini-2.5-flash")
-OLLAMA_MODEL   = os.environ.get("OLLAMA_MODEL",    "llama3.2")
-OLLAMA_URL     = os.environ.get("OLLAMA_URL",      "http://localhost:11434")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL",    "models/gemini-1.5-flash")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL",    "llama3.2")
+OLLAMA_URL = os.environ.get("OLLAMA_URL",      "http://localhost:11434")
 OLLAMA_ENABLED = os.environ.get("OLLAMA_ENABLED",  "false").lower() == "true"
-CLAUDE_MODEL   = os.environ.get("LLM_MODEL",       "claude-sonnet-4-6")
+CLAUDE_MODEL = os.environ.get("LLM_MODEL",       "claude-sonnet-4-6")
 
 # ── Lazy-initialised clients ─────────────────────────────────────────────────
-_gemini_model  = None
+_gemini_model = None
 _claude_client = None
 
 
@@ -177,10 +183,12 @@ def _call_gemini(system_prompt: str, messages: list) -> str:
     """Call Google Gemini. Returns response text or raises Exception."""
     model = _get_gemini()
     if model is None:
-        raise RuntimeError("Gemini not configured — GOOGLE_API_KEY missing or empty")
+        raise RuntimeError(
+            "Gemini not configured — GOOGLE_API_KEY missing or empty")
 
     # Combine system prompt + conversation history into a single prompt
-    parts = [f"SYSTEM_INSTRUCTIONS:\n{system_prompt}", "\n\n--- CONVERSATION ---\n"]
+    parts = [
+        f"SYSTEM_INSTRUCTIONS:\n{system_prompt}", "\n\n--- CONVERSATION ---\n"]
     for msg in messages:
         role = "User" if msg["role"] == "user" else "EgerBot"
         parts.append(f"{role}: {msg['content']}")
@@ -204,7 +212,8 @@ def _call_gemini(system_prompt: str, messages: list) -> str:
         if not candidate.content or not candidate.content.parts:
             raise RuntimeError("Gemini candidate has no content parts")
 
-        text = "".join(p.text for p in candidate.content.parts if hasattr(p, "text")).strip()
+        text = "".join(
+            p.text for p in candidate.content.parts if hasattr(p, "text")).strip()
         if not text:
             raise RuntimeError("Gemini returned empty text")
 
@@ -227,7 +236,8 @@ def _call_ollama(system_prompt: str, messages: list) -> str:
 
     ollama_messages = [{"role": "system", "content": system_prompt}]
     for msg in messages:
-        ollama_messages.append({"role": msg["role"], "content": msg["content"]})
+        ollama_messages.append(
+            {"role": msg["role"], "content": msg["content"]})
 
     resp = requests.post(
         f"{OLLAMA_URL}/api/chat",
@@ -250,7 +260,8 @@ def _call_claude(system_prompt: str, messages: list) -> str:
     """Call Anthropic Claude. Returns response text or raises Exception."""
     client = _get_claude()
     if client is None:
-        raise RuntimeError("Claude not configured — ANTHROPIC_API_KEY missing or empty")
+        raise RuntimeError(
+            "Claude not configured — ANTHROPIC_API_KEY missing or empty")
 
     resp = client.messages.create(
         model=CLAUDE_MODEL,
@@ -291,12 +302,15 @@ def get_session_history(db: Client, session_id: str) -> list:
         history = []
         for row in rows.data:
             if row.get("user_message"):
-                history.append({"role": "user",      "content": row["user_message"]})
+                history.append(
+                    {"role": "user",      "content": row["user_message"]})
             if row.get("bot_response"):
-                history.append({"role": "assistant", "content": row["bot_response"]})
+                history.append(
+                    {"role": "assistant", "content": row["bot_response"]})
         return history
     except Exception as e:
-        logger.warning(f"Could not fetch session history for {session_id}: {e}")
+        logger.warning(
+            f"Could not fetch session history for {session_id}: {e}")
         return []
 
 
@@ -340,7 +354,8 @@ def call_llm(db: Client, session_id: str, user_message: str,
     try:
         system_prompt = build_system_prompt(db)
     except FileNotFoundError:
-        logger.error("System prompt file not found — check SYSTEM_PROMPT_PATH in .env")
+        logger.error(
+            "System prompt file not found — check SYSTEM_PROMPT_PATH in .env")
         return _err(_fallback(language, "config_error", email, phone), "prompt_missing")
     except Exception as e:
         logger.error(f"Failed to build system prompt: {e}")
@@ -351,7 +366,7 @@ def call_llm(db: Client, session_id: str, user_message: str,
         return _err(_fallback(language, "config_error", email, phone), "empty_prompt")
 
     # ── Build messages ───────────────────────────────────────────────────────
-    history  = get_session_history(db, session_id)
+    history = get_session_history(db, session_id)
     messages = build_messages(history, user_message)
 
     # ── Provider cascade ─────────────────────────────────────────────────────
@@ -399,10 +414,48 @@ def call_llm(db: Client, session_id: str, user_message: str,
             last_error = f"{type(e).__name__}: {e}"
             continue
 
-    # ── All providers failed ─────────────────────────────────────────────────
+    # ── All providers failed — try rule-based engine before giving up ───────
     logger.error(f"All LLM providers failed. Last error: {last_error}")
+
+    if rule_answer is not None:
+        try:
+            rule_response = rule_answer(user_message, language)
+            if rule_response:
+                logger.info("Rule engine provided fallback answer")
+                # Add a subtle note that this is a static answer
+                note_en = "\n\n---\n*Note: I am currently operating in offline mode. For the most up-to-date information, please contact admissions@egerton.ac.ke or call +254 51 221 3018.*"
+                note_sw = "\n\n---\n*Kumbuka: Ninafanya kazi bila mtandao sasa hivi. Kwa taarifa za hivi karibuni, wasiliana na admissions@egerton.ac.ke au piga +254 51 221 3018.*"
+                note = note_sw if language == "sw" else note_en
+                return {
+                    "response":  rule_response + note,
+                    "escalated": False,
+                    "intent":    None,
+                    "error":     None,
+                    "provider":  "rule_engine",
+                }
+        except Exception as re_err:
+            logger.warning(f"Rule engine failed: {re_err}")
+
+    # All providers AND rule engine failed — show "still learning" message
+    still_learning_en = (
+        "I'm still learning and couldn't answer your question right now. "
+        "EgerBot is being improved every day!\n\n"
+        f"For immediate help, please contact the Admissions Office directly:\n"
+        f"📧 {email}\n"
+        f"📞 {phone}\n"
+        f"🌐 www.egerton.ac.ke"
+    )
+    still_learning_sw = (
+        "Bado ninajifunza na sikuweza kujibu swali lako sasa hivi. "
+        "EgerBot inaboreshwa kila siku!\n\n"
+        f"Kwa msaada wa haraka, wasiliana na Ofisi ya Udahili moja kwa moja:\n"
+        f"📧 {email}\n"
+        f"📞 {phone}\n"
+        f"🌐 www.egerton.ac.ke"
+    )
+
     return _err(
-        _fallback(language, "all_providers_failed", email, phone),
+        still_learning_sw if language == "sw" else still_learning_en,
         f"all_providers_failed: {last_error}",
     )
 
