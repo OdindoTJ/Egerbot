@@ -348,8 +348,8 @@ textarea,input{font-family:inherit;border:none;outline:none;background:none}
   <div class="messages-area" id="messagesArea">
     <div class="ann-card" id="annCard">
       <div class="ann-text">
-        <div class="ann-title"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>2026/2027 Applications Open</div>
-        <div class="ann-body">KUCCPS and Self-Sponsored applications are now open. Ask me about entry requirements or how to apply!</div>
+        <div class="ann-title" id="annTitle"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg>2026/2027 Applications Open</div>
+        <div class="ann-body" id="annBody">KUCCPS and Self-Sponsored applications are now open. Ask me about entry requirements or how to apply!</div>
       </div>
       <button class="ann-close" id="annClose"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
     </div>
@@ -552,10 +552,16 @@ function sanitize(s){ const d=document.createElement("div"); d.textContent=s; re
 
 function renderMD(text){
   let h = sanitize(text);
+  // Headings
+  h = h.replace(/^###\s+(.+)$/gm,"<strong>$1</strong>");
+  h = h.replace(/^##\s+(.+)$/gm,"<strong>$1</strong>");
+  h = h.replace(/^#\s+(.+)$/gm,"<strong>$1</strong>");
+  // Bold and italic
   h = h.replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>");
   h = h.replace(/\*(.+?)\*/g,"<em>$1</em>");
+  // Numbered lists — $2 is correct here (group 1 = number, group 2 = text)
   h = h.replace(/^(\d+)\.\s+(.+)$/gm,"<li>$2</li>");
-  h = h.replace(/^[-•]\s+(.+)$/gm,"<li>$2</li>");
+  h = h.replace(/^[-•\*]\s+(.+)$/gm,"<li>$1</li>");
   h = h.replace(/((?:<li>.*?<\/li>\n?)+)/g,"<ul>$1</ul>");
   h = h.replace(/\n\n/g,"<br><br>");
   h = h.replace(/\n/g,"<br>");
@@ -1143,7 +1149,17 @@ async function initSession(){
     return;
   }
   state.sessionId = data.session_id;
-  const{data:gd} = await apiGreeting();
+  // Load greeting and announcement in parallel
+  const [{data:gd},{data:ad}] = await Promise.all([
+    apiGreeting(),
+    apiRequest("GET","/api/announcement").catch(()=>({data:null})),
+  ]);
+  // Update announcement card from backend if available
+  if(ad && ad.title && $("annTitle")){
+    $("annTitle").innerHTML = $("annTitle").querySelector("svg").outerHTML + ad.title;
+    if($("annBody")) $("annBody").textContent = ad.body || "";
+    if(ad.hidden){ const c=$("annCard"); if(c) c.style.display="none"; }
+  }
   const greeting = gd ? (state.lang==="sw" ? gd.greeting_sw : gd.greeting_en) : _timeGreeting(state.lang);
   setTimeout(()=>appendBot(greeting,null,false,false),500);
 }

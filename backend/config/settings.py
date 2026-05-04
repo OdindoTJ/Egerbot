@@ -3,8 +3,6 @@ config/settings.py
 Loads all environment variables.
 Every other module imports from here — never from os.environ directly.
 
-IMPORTANT: ANTHROPIC_API_KEY is now OPTIONAL. The LLM cascade
-tries Gemini → Ollama → Claude. You only need ONE provider key.
 """
 
 import os
@@ -38,14 +36,11 @@ GOOGLE_API_KEY = os.environ.get("GOOGLE_API_KEY", "")
 # Anthropic Claude (console.anthropic.com)
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
-# Ollama (local, no key needed — just run: ollama serve)
-OLLAMA_URL = os.environ.get("OLLAMA_URL",   "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
 
 # Model names
 LLM_MODEL = os.environ.get("LLM_MODEL",      "claude-sonnet-4-6")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL",   "gemini-1.5-flash")
-LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "1024"))
+LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "2048"))
 
 
 # ── Flask ────────────────────────────────────────────────────────────────────
