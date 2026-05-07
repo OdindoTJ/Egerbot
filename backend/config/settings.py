@@ -39,7 +39,7 @@ ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 
 # Model names
 LLM_MODEL = os.environ.get("LLM_MODEL",      "claude-sonnet-4-6")
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL",   "gemini-1.5-flash")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL",   "gemini-2.5-flash")
 LLM_MAX_TOKENS = int(os.environ.get("LLM_MAX_TOKENS", "2048"))
 
 
