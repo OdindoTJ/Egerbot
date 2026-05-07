@@ -636,6 +636,7 @@ const S = {
   unansweredFilter: "open",
   confirmCallback: null,
 };
+let currentConvertQuestion = "";  
 
 // ── DOM helpers ────────────────────────────────────────────────
 const $  = id => document.getElementById(id);
@@ -946,7 +947,22 @@ async function renderDashboard(){
 async function renderLogs(page=1){
   S.logsPage = page;
   const search = $("globalSearchInput")?.value?.trim() || "";
-  const { data, error } = await apiGet(`/api/admin/logs?page=${page}&limit=20${search?`&search=${encodeURIComponent(search)}`:""}`);
+  
+  // Get filter values
+  const language = document.getElementById("logsLanguage")?.value || "";
+  const escalated = document.getElementById("logsEscalated")?.value || "";
+  const dateFrom = document.getElementById("logsDateFrom")?.value || "";
+  const dateTo = document.getElementById("logsDateTo")?.value || "";
+  
+  // Build query string
+  let queryParams = `page=${page}&limit=20`;
+  if(search) queryParams += `&search=${encodeURIComponent(search)}`;
+  if(language) queryParams += `&language=${language}`;
+  if(escalated) queryParams += `&escalated=${escalated}`;
+  if(dateFrom) queryParams += `&date_from=${dateFrom}`;
+  if(dateTo) queryParams += `&date_to=${dateTo}`;
+  
+  const { data, error } = await apiGet(`/api/admin/logs?${queryParams}`);
   if(error){ $("pageContent").innerHTML=`<p style="color:var(--red);padding:20px">${esc(error)}</p>`; return; }
 
   const rows = (data.logs||[]).map(r=>`
@@ -956,10 +972,10 @@ async function renderLogs(page=1){
       <td><span class="badge badge-gray">${esc(r.user_type||"—")}</span></td>
       <td style="white-space:nowrap;color:var(--gray-400)">${fmtDate(r.created_at)}</td>
       <td>
-        <button class="btn btn-sm btn-outline" onclick="viewSession('${r.chat_session_id}')">View session</button>
+        <button class="btn btn-sm btn-outline" onclick="viewSession('${r.chat_session_id}')">View</button>
         <button class="btn btn-sm btn-red" style="margin-left:4px" onclick="deleteLog('${r.id}')">Delete</button>
       </td>
-    </tr>`).join("") || `<tr><td colspan="5" class="table-empty">No conversations yet</td></tr>`;
+    </tr>`).join("") || `<tr><td colspan="5" class="table-empty">No conversations found</td></tr>`;
 
   $("pageContent").innerHTML = `
     <div class="section-header">
@@ -969,6 +985,44 @@ async function renderLogs(page=1){
         Export CSV
       </button>
     </div>
+    
+    <!-- FILTER BAR -->
+    <div style="background:var(--white);border:1px solid var(--gray-200);border-radius:var(--r-lg);padding:12px 16px;margin-bottom:16px;display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap">
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <label style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--gray-500)">Language</label>
+        <select id="logsLanguage" style="height:34px;padding:0 10px;border:1px solid var(--gray-200);border-radius:var(--r);font-size:13px;color:var(--gray-700);background:var(--gray-50)">
+          <option value="">All</option>
+          <option value="en">English</option>
+          <option value="sw">Kiswahili</option>
+        </select>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <label style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--gray-500)">Escalated</label>
+        <select id="logsEscalated" style="height:34px;padding:0 10px;border:1px solid var(--gray-200);border-radius:var(--r);font-size:13px;color:var(--gray-700);background:var(--gray-50)">
+          <option value="">All</option>
+          <option value="true">Escalated Only</option>
+          <option value="false">Not Escalated</option>
+        </select>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <label style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--gray-500)">Date From</label>
+        <input type="date" id="logsDateFrom" style="height:34px;padding:0 10px;border:1px solid var(--gray-200);border-radius:var(--r);font-size:13px;color:var(--gray-700);background:var(--gray-50)"/>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <label style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--gray-500)">Date To</label>
+        <input type="date" id="logsDateTo" style="height:34px;padding:0 10px;border:1px solid var(--gray-200);border-radius:var(--r);font-size:13px;color:var(--gray-700);background:var(--gray-50)"/>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <label style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--gray-500)">&nbsp;</label>
+        <button class="btn btn-sm btn-green" style="height:34px" onclick="renderLogs(1)">Apply Filters</button>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:4px">
+        <label style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;color:var(--gray-500)">&nbsp;</label>
+        <button class="btn btn-sm btn-outline" style="height:34px" onclick="document.getElementById('logsLanguage').value='';document.getElementById('logsEscalated').value='';document.getElementById('logsDateFrom').value='';document.getElementById('logsDateTo').value='';renderLogs(1)">Clear</button>
+      </div>
+    </div>
+    
+    <!-- Search bar -->
     <div class="table-wrap">
       <div class="table-toolbar">
         <div class="search-box" style="max-width:280px">
@@ -983,6 +1037,7 @@ async function renderLogs(page=1){
       </table>
     </div>`;
 }
+
 
 async function viewSession(sessionId){
   if(!sessionId||sessionId==="null"||sessionId==="undefined"){ toast("No session ID available","error"); return; }
@@ -1069,6 +1124,8 @@ async function deleteUnanswered(id){
 }
 
 function convertToFAQ(id, question){
+  currentConvertQuestion = question;  // Store in global variable
+  
   openModal("Convert to FAQ", `
     <div style="margin-bottom:14px;padding:10px 12px;background:var(--gray-50);border-radius:var(--r);font-size:13px;color:var(--gray-700)"><strong>Question:</strong> ${esc(question)}</div>
     <div class="field"><label class="field-label">Category <span class="required-star">*</span></label>
@@ -1088,11 +1145,14 @@ function convertToFAQ(id, question){
 }
 
 async function submitConvertFAQ(id){
+  const question = currentConvertQuestion;
   const cat    = $("faqCat").value;
   const ans    = $("faqAns").value.trim();
   const ansSw  = $("faqAnsSw").value.trim();
   if(!cat||!ans){ toast("Please fill in category and answer","error"); return; }
-  const {error} = await apiPost(`/api/admin/unanswered/${id}/convert-faq`,{answer_en:ans,answer_sw:ansSw||undefined,category:cat});
+  const body = {question_en:question, answer_en:ans, answer_sw:ansSw||undefined, category:cat};
+  console.log("Sending:", body);  // Debug — check console after clicking
+  const{error}=await apiPost(`/api/admin/unanswered/${id}/convert-faq`, body);
   if(error){ toast("Error: "+error,"error"); return; }
   toast("✅ Converted to FAQ!","success");
   closeModal(); renderUnanswered();

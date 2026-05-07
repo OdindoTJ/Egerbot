@@ -2,11 +2,7 @@
 routes/admin.py
 All admin API routes — protected by JWT auth.
 Fixes applied:
-  - analytics: .eq("status","open") not .eq("resolved",False)
-  - chat_logs select: chat_session_id only (no session_id column)
-  - unanswered_questions: status TEXT column, not boolean resolved
-  - convert_to_faq: updates status="resolved" not resolved=True
-  - login token stored in localStorage (persists page refresh)
+ 
 """
 
 import csv
@@ -251,6 +247,24 @@ def popular_questions():
     return jsonify(rows.data or []), 200
 
 
+@admin_bp.route("/analytics/feedback-distribution", methods=["GET"])
+@require_admin
+def feedback_distribution():
+    """Return rating distribution for the dashboard chart."""
+    db = get_db()
+    all_fb = db.table("feedback").select("rating").execute()
+    ratings = [r["rating"] for r in (all_fb.data or []) if r.get("rating")]
+    dist = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+    for r in ratings:
+        if r in dist:
+            dist[r] += 1
+
+    return jsonify([
+        {"rating": r, "count": dist[r]}
+        for r in range(5, 0, -1)
+    ]), 200
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CHAT LOGS
 # ══════════════════════════════════════════════════════════════════════════════
@@ -259,19 +273,23 @@ def popular_questions():
 @require_admin
 def get_logs():
     """
-    Paginated chat log listing.
-    KEY FIX: select chat_session_id only — no 'session_id' column in chat_logs.
+    Paginated chat log listing with filters:
+    - language (en/sw)
+    - escalated (true/false)
+    - date_from / date_to (YYYY-MM-DD)
     """
     page = int(request.args.get("page",  1))
     per_page = int(request.args.get("limit", 20))
     search = request.args.get("search",    "").strip()
     user_type = request.args.get("user_type", "").strip()
+    language = request.args.get("language", "").strip()
+    escalated = request.args.get("escalated", "").strip()
+    date_from = request.args.get("date_from", "").strip()
+    date_to = request.args.get("date_to", "").strip()
 
     offset = (page - 1) * per_page
     db = get_db()
 
-    # chat_logs columns: id, chat_session_id, user_message, bot_response,
-    #                    intent_detected, user_type, created_at
     query = db.table("chat_logs") \
         .select("id, chat_session_id, user_message, bot_response, user_type, created_at") \
         .order("created_at", desc=True) \
@@ -280,8 +298,41 @@ def get_logs():
     if user_type:
         query = query.eq("user_type", user_type)
 
+    # Language filter — join with chat_sessions to get language
+    if language:
+        # Get session IDs matching the language
+        sessions = db.table("chat_sessions") \
+            .select("id") \
+            .eq("language", language) \
+            .execute()
+        session_ids = [s["id"] for s in (sessions.data or [])]
+        if session_ids:
+            query = query.in_("chat_session_id", session_ids)
+        else:
+            # No sessions match — return empty
+            return jsonify({"logs": [], "total": 0, "page": page}), 200
+
+    # Escalated filter — join with chat_sessions
+    if escalated == "true":
+        sessions = db.table("chat_sessions") \
+            .select("id") \
+            .eq("escalated", True) \
+            .execute()
+        session_ids = [s["id"] for s in (sessions.data or [])]
+        if session_ids:
+            query = query.in_("chat_session_id", session_ids)
+        else:
+            return jsonify({"logs": [], "total": 0, "page": page}), 200
+
+    # Date range filter
+    if date_from:
+        query = query.gte("created_at", date_from)
+    if date_to:
+        # Add one day to include the full end date
+        query = query.lt("created_at", date_to + "T23:59:59")
+
     result = query.execute()
-    return jsonify(result.data or []), 200
+    return jsonify({"logs": result.data or [], "total": len(result.data or []), "page": page}), 200
 
 
 @admin_bp.route("/logs/export", methods=["GET"])
@@ -434,7 +485,7 @@ def convert_to_faq(question_id):
     # Mark original question as resolved — status TEXT column (not boolean resolved)
     db.table("unanswered_questions").update({
         "status":      "resolved",
-        "resolved_by": get_admin_email(g.admin_id),
+        "resolved_by": g.admin_id,   # ← FIXED: use UUID, not email
         "notes":       f"Converted to FAQ: {faq.data[0]['id']}",
     }).eq("id", question_id).execute()
 

@@ -1,6 +1,72 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+    <title>Egerton University — Virtual Assistant</title>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'DM Sans', system-ui, sans-serif;
+            background: url('egerton-gate.jpg') center/cover no-repeat fixed;
+            min-height: 100vh;
+            position: relative;
+        }
+
+        /* Dark overlay for readability */
+        body::before {
+            content: '';
+            position: fixed; inset: 0;
+            background: rgba(0, 0, 0, 0.45);
+            z-index: 0;
+        }
+
+        /* ── Centered text ── */
+        .hero {
+            position: relative; z-index: 1;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            min-height: 100vh; text-align: center;
+            padding: 24px;
+        }
+        .hero h1 {
+            font-size: 42px; font-weight: 700; color: #fff;
+            text-shadow: 0 2px 12px rgba(0,0,0,.5);
+            margin-bottom: 8px;
+        }
+        .hero p {
+            font-size: 18px; color: #e8f5e9;
+            text-shadow: 0 1px 8px rgba(0,0,0,.4);
+            margin-bottom: 4px;
+        }
+        .hero .hint {
+            margin-top: 24px;
+            font-size: 15px; color: #c8e6c9;
+            background: rgba(0,0,0,.35);
+            padding: 10px 20px; border-radius: 30px;
+        }
+
+        @media (max-width: 600px) {
+            .hero h1 { font-size: 28px; }
+            .hero p  { font-size: 15px; }
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ════════════ TEXT OVERLAY ════════════ -->
+    <div class="hero">
+        <h1>Egerton University</h1>
+        <p>Your journey starts here.</p>
+        <p class="hint">💬 Click the chat icon to talk to EgerBot</p>
+    </div>
+
+    <!-- ════════════ YOUR WIDGET ════════════ -->
+    <!DOCTYPE html>
+<html lang="en">
+<head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>EgerBot Widget</title>
@@ -180,5 +246,9 @@
 
 })();
 </script>
+</body>
+</html>
+
+
 </body>
 </html>
