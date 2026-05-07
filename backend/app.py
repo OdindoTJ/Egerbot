@@ -4,6 +4,7 @@ Creates the Flask app, registers all blueprints, starts the server.
 """
 
 import logging
+import os
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 
@@ -13,8 +14,6 @@ from routes.chat import chat_bp
 from routes.admin import admin_bp
 
 # ── Rate limiting ─────────────────────────────────────────────────────────────
-# pip install flask-limiter
-# Prevents API abuse and runaway billing on Gemini/Claude
 try:
     from flask_limiter import Limiter
     from flask_limiter.util import get_remote_address
@@ -40,15 +39,13 @@ def create_app() -> Flask:
     app = Flask(__name__)
 
     # ── Rate Limiting ─────────────────────────────────────────────────────────
-    # Global: 200 requests/day, 50/hour per IP.
-    # The /api/chat route gets a tighter per-minute limit (see chat.py).
     if LIMITER_AVAILABLE:
         limiter = Limiter(
             app=app,
             key_func=get_remote_address,
             default_limits=["200 per day", "50 per hour"],
-            headers_enabled=True,           # sends X-RateLimit-* headers
-            storage_uri="memory://",        # in-memory; swap for Redis in prod
+            headers_enabled=True,
+            storage_uri="memory://",
         )
         app.extensions["limiter"] = limiter
         logger.info("Rate limiting enabled (200/day, 50/hour per IP)")
@@ -56,7 +53,6 @@ def create_app() -> Flask:
         app.extensions["limiter"] = None
 
     # ── Input Sanitization ────────────────────────────────────────────────────
-    # Block prompt-injection attempts and oversized payloads on every request.
     _BLOCKED_PATTERNS = [
         "ignore previous instructions",
         "ignore all instructions",
@@ -75,7 +71,6 @@ def create_app() -> Flask:
     def sanitize_input():
         """Block oversized bodies and obvious prompt-injection strings."""
         if request.method in ("POST", "PUT", "PATCH"):
-            # Block payloads over 10 KB
             content_length = request.content_length
             if content_length and content_length > 10_240:
                 return jsonify({"error": "Request body too large"}), 413
@@ -93,15 +88,6 @@ def create_app() -> Flask:
                         }), 400
 
     # ── CORS ──────────────────────────────────────────────────────────────────
-    # The key fix: flask-cors must handle preflight OPTIONS requests explicitly.
-    # CORS(app, origins="*") alone is NOT enough — Render's proxy strips headers.
-    # We must set supports_credentials=False and explicitly expose all routes.
-    #
-    # For production: set ALLOWED_ORIGINS=https://egerbot.netlify.app in Render
-    # env vars. Comma-separate multiple origins if needed.
-    #
-    # For development (ALLOWED_ORIGINS=*): allow everything.
-
     if ALLOWED_ORIGINS.strip() == "*":
         CORS(
             app,
@@ -111,7 +97,7 @@ def create_app() -> Flask:
             expose_headers=["Content-Type"],
             methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
             supports_credentials=False,
-            max_age=86400,          # cache preflight for 24h
+            max_age=86400,
         )
     else:
         origins_list = [o.strip()
@@ -128,14 +114,11 @@ def create_app() -> Flask:
         )
         logger.info(f"CORS restricted to: {origins_list}")
 
-    # ── Belt-and-suspenders: manual CORS headers on every response ────────────
-    # Some reverse proxies (including Render's) strip flask-cors headers.
-    # This after_request hook guarantees they are always present.
+    # ── Manual CORS headers on every response ─────────────────────────────────
     @app.after_request
     def add_cors_headers(response):
         origin = "*"
         if ALLOWED_ORIGINS.strip() != "*":
-            # Echo back the request origin if it's in our allowed list
             from flask import request as req
             req_origin = req.headers.get("Origin", "")
             allowed = [o.strip() for o in ALLOWED_ORIGINS.split(",")]
@@ -153,10 +136,8 @@ def create_app() -> Flask:
         return response
 
     # ── Explicit OPTIONS handler for all routes ───────────────────────────────
-    # Browsers send a preflight OPTIONS request before POST/PATCH.
-    # Without this, Render returns 404 for OPTIONS → CORS fails.
     @app.route("/", defaults={"path": ""}, methods=["OPTIONS"])
-    @app.route("/<path:path>",            methods=["OPTIONS"])
+    @app.route("/<path:path>", methods=["OPTIONS"])
     def handle_options(path):
         return jsonify({}), 200
 
@@ -167,6 +148,54 @@ def create_app() -> Flask:
             "message": "EgerBot Backend is running",
             "version": "1.0.0"
         }), 200
+
+    # ── UptimeRobot Heartbeat Monitor ─────────────────────────────────────────
+    # This endpoint is called by UptimeRobot's standard HTTP monitor.
+    # When the server is alive, it forwards a ping to the Heartbeat monitor URL,
+    # confirming the server is not just responding but fully operational.
+    UPTIME_HEARTBEAT_URL = os.environ.get("UPTIME_HEARTBEAT_URL", "")
+
+    @app.route("/api/heartbeat", methods=["GET", "POST"])
+    def uptime_heartbeat():
+        """
+        Receives a ping from UptimeRobot's standard monitor and forwards
+        a success signal to the Heartbeat monitor URL.
+
+        This ensures that if the server is completely down (not just slow),
+        the Heartbeat monitor will not receive its expected ping and will
+        trigger an alert.
+
+        Environment Variable Required:
+            UPTIME_HEARTBEAT_URL — The unique Heartbeat URL from UptimeRobot
+        """
+        if not UPTIME_HEARTBEAT_URL:
+            logger.warning("Heartbeat URL not configured — skipping ping")
+            return jsonify({
+                "status": "ok",
+                "heartbeat": "not_configured"
+            }), 200
+
+        try:
+            import requests
+            response = requests.get(UPTIME_HEARTBEAT_URL, timeout=10)
+            logger.debug(f"Heartbeat sent — status: {response.status_code}")
+            return jsonify({
+                "status": "ok",
+                "heartbeat": "sent"
+            }), 200
+        except requests.exceptions.Timeout:
+            logger.error("Heartbeat ping timed out")
+            return jsonify({
+                "status": "error",
+                "heartbeat": "timeout"
+            }), 500
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Heartbeat ping failed: {e}")
+            return jsonify({
+                "status": "error",
+                "heartbeat": "failed"
+            }), 500
+
     # ── Register blueprints ───────────────────────────────────────────────────
     app.register_blueprint(health_bp)
     app.register_blueprint(chat_bp)
@@ -198,7 +227,7 @@ app = create_app()
 
 if __name__ == "__main__":
     app.run(
-        host="0.0.0.0",    # MUST be 0.0.0.0 for Render — not 127.0.0.1
+        host="0.0.0.0",
         port=PORT,
         debug=(FLASK_ENV == "development"),
     )
